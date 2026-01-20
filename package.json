@@ -1,0 +1,62 @@
+{
+  "name": "web-agent-sdk",
+  "version": "1.0.0",
+  "description": "Universal Web Agent SDK - AI-powered browser automation that works on any webpage",
+  "type": "module",
+  "main": "dist/index.js",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    },
+    "./inject": {
+      "import": "./dist/inject.mjs",
+      "require": "./dist/inject.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [
+    "web-agent",
+    "browser-automation",
+    "ai-agent",
+    "dom-manipulation",
+    "llm"
+  ],
+  "dependencies": {
+    "zod": "^3.25.76"
+  },
+  "peerDependencies": {
+    "@langchain/anthropic": ">=0.2.0",
+    "@langchain/core": ">=0.2.0",
+    "@langchain/google-genai": ">=0.0.20",
+    "@langchain/openai": ">=0.2.0"
+  },
+  "peerDependenciesMeta": {
+    "@langchain/openai": {
+      "optional": true
+    },
+    "@langchain/anthropic": {
+      "optional": true
+    },
+    "@langchain/google-genai": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@langchain/core": "^0.2.36",
+    "@types/node": "^20.0.0",
+    "tsup": "^8.0.0",
+    "typescript": "^5.3.0"
+  },
+  "license": "MIT"
+}
