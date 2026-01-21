@@ -1,0 +1,23 @@
+{
+  "name": "openai-interactive-example",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@langchain/core": "^0.2.0",
+    "@langchain/openai": "^0.2.0",
+    "@langchain/google-genai": "^0.0.20",
+    "@langchain/anthropic": "^0.2.0",
+    "web-agent-sdk": "file:../../",
+    "zod": "^3.22.4"
+  },
+  "devDependencies": {
+    "typescript": "^5.2.2",
+    "vite": "^5.2.0"
+  }
+}

@@ -16,6 +16,7 @@ export interface InteractiveElement {
   className?: string;
   href?: string;
   value?: string;
+  checked?: boolean;
   isVisible: boolean;
   isEnabled: boolean;
   rect: DOMRect;
@@ -132,7 +133,8 @@ export class DOMAnalyzer {
    * Generate human-readable description of the page state
    */
   getStateDescription(): string {
-    const ctx = this.lastAnalysis || this.analyze();
+    // Always re-analyze to get fresh state, avoiding stale cache issues
+    const ctx = this.analyze();
     
     let description = `# Page: ${ctx.title}\nURL: ${ctx.url}\n\n`;
     
@@ -167,7 +169,16 @@ export class DOMAnalyzer {
     ctx.elements.slice(0, 50).forEach(el => {
       const label = el.ariaLabel || el.text || el.placeholder || el.name || el.tagName;
       const truncated = label.length > 50 ? label.substring(0, 47) + '...' : label;
-      description += `[${el.index}] ${el.type}: ${truncated}\n`;
+      
+      let extra = '';
+      if (el.value && el.value !== label && el.value !== 'on') {
+        extra = ` (value: "${el.value}")`;
+      }
+      if (el.type.includes('checkbox') || el.type.includes('radio')) {
+        extra = el.checked ? ' [CHECKED]' : ' [UNCHECKED]';
+      }
+      
+      description += `[${el.index}] ${el.type}: ${truncated}${extra}\n`;
     });
 
     if (ctx.elements.length > 50) {
@@ -216,6 +227,7 @@ export class DOMAnalyzer {
         className: el.className || undefined,
         href: (el as HTMLAnchorElement).href || undefined,
         value: (el as HTMLInputElement).value || undefined,
+        checked: (el as HTMLInputElement).checked || false,
         isVisible: true,
         isEnabled: !(el as HTMLInputElement).disabled,
         rect,
