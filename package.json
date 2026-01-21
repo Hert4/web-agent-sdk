@@ -13,7 +13,7 @@
       "types": "./dist/index.d.ts"
     },
     "./inject": {
-      "import": "./dist/inject.mjs",
+      "import": "./dist/inject.cjs",
       "require": "./dist/inject.js"
     }
   },
