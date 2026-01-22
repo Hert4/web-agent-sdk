@@ -16,6 +16,7 @@ export interface InteractiveElement {
   className?: string;
   href?: string;
   value?: string;
+  checked?: boolean;
   isVisible: boolean;
   isEnabled: boolean;
   rect: DOMRect;
@@ -33,6 +34,12 @@ export interface PageContext {
   tables: TableInfo[];
   links: LinkInfo[];
   headings: HeadingInfo[];
+  errors: ErrorInfo[];
+}
+
+export interface ErrorInfo {
+  message: string;
+  relatedElementIndex?: number;
 }
 
 export interface FormInfo {
@@ -116,6 +123,7 @@ export class DOMAnalyzer {
       tables: this.analyzeTables(),
       links: this.extractLinks(elements),
       headings: this.extractHeadings(),
+      errors: this.analyzeErrors(elements),
     };
 
     return this.lastAnalysis;
@@ -132,12 +140,23 @@ export class DOMAnalyzer {
    * Generate human-readable description of the page state
    */
   getStateDescription(): string {
-    const ctx = this.lastAnalysis || this.analyze();
+    // Always re-analyze to get fresh state, avoiding stale cache issues
+    const ctx = this.analyze();
     
     let description = `# Page: ${ctx.title}\nURL: ${ctx.url}\n\n`;
     
     if (ctx.description) {
       description += `Description: ${ctx.description}\n\n`;
+    }
+
+    // Add errors and warnings
+    if (ctx.errors.length > 0) {
+      description += `## ⚠️ ERRORS & WARNINGS\n`;
+      ctx.errors.forEach(err => {
+        const related = err.relatedElementIndex !== undefined ? ` (related to element [${err.relatedElementIndex}])` : '';
+        description += `! ${err.message}${related}\n`;
+      });
+      description += '\n';
     }
 
     // Add headings structure
@@ -167,7 +186,16 @@ export class DOMAnalyzer {
     ctx.elements.slice(0, 50).forEach(el => {
       const label = el.ariaLabel || el.text || el.placeholder || el.name || el.tagName;
       const truncated = label.length > 50 ? label.substring(0, 47) + '...' : label;
-      description += `[${el.index}] ${el.type}: ${truncated}\n`;
+      
+      let extra = '';
+      if (el.value && el.value !== label && el.value !== 'on') {
+        extra = ` (value: "${el.value}")`;
+      }
+      if (el.type.includes('checkbox') || el.type.includes('radio')) {
+        extra = el.checked ? ' [CHECKED]' : ' [UNCHECKED]';
+      }
+      
+      description += `[${el.index}] ${el.type}: ${truncated}${extra}\n`;
     });
 
     if (ctx.elements.length > 50) {
@@ -216,6 +244,7 @@ export class DOMAnalyzer {
         className: el.className || undefined,
         href: (el as HTMLAnchorElement).href || undefined,
         value: (el as HTMLInputElement).value || undefined,
+        checked: (el as HTMLInputElement).checked || false,
         isVisible: true,
         isEnabled: !(el as HTMLInputElement).disabled,
         rect,
@@ -304,12 +333,17 @@ export class DOMAnalyzer {
     if (el.id) return `#${el.id}`;
     
     const tag = el.tagName.toLowerCase();
-    const classes = Array.from(el.classList).slice(0, 2).join('.');
+    const classes = Array.from(el.classList).slice(0, 2).map(c => CSS.escape(c)).join('.');
     
     if (classes) {
       const selector = `${tag}.${classes}`;
-      if (document.querySelectorAll(selector).length === 1) {
-        return selector;
+      // Verify the selector is valid and unique
+      try {
+        if (document.querySelectorAll(selector).length === 1) {
+          return selector;
+        }
+      } catch (e) {
+        // Ignore invalid selectors
       }
     }
 
@@ -422,5 +456,91 @@ export class DOMAnalyzer {
       }
     });
     return headings;
+  }
+
+  private analyzeErrors(elements: InteractiveElement[]): ErrorInfo[] {
+    const errors: ErrorInfo[] = [];
+    const seenMessages = new Set<string>();
+
+    const addError = (msg: string, index?: number) => {
+      const key = `${msg}-${index}`;
+      if (!seenMessages.has(key)) {
+        seenMessages.add(key);
+        errors.push({ message: msg, relatedElementIndex: index });
+      }
+    };
+
+    // 1. Check HTML5 Validity
+    elements.forEach(el => {
+      const domEl = this.elementCache.get(el.index);
+      if (domEl instanceof HTMLInputElement || domEl instanceof HTMLSelectElement || domEl instanceof HTMLTextAreaElement) {
+        if (!domEl.validity.valid) {
+          addError(`Validation Error: ${domEl.validationMessage}`, el.index);
+        }
+      }
+      
+      // 2. Check aria-invalid
+      if (domEl?.getAttribute('aria-invalid') === 'true') {
+        const errId = domEl.getAttribute('aria-errormessage');
+        let msg = 'Invalid input value';
+        if (errId) {
+          const errEl = document.getElementById(errId);
+          if (errEl?.textContent) msg = errEl.textContent.trim();
+        }
+        addError(msg, el.index);
+      }
+    });
+
+    // 3. Check role="alert" (live regions, toast messages)
+    document.querySelectorAll('[role="alert"]').forEach(el => {
+      const text = el.textContent?.trim();
+      const style = window.getComputedStyle(el);
+      if (text && style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0') {
+        addError(`Alert: ${text}`);
+      }
+    });
+
+    // 4. Heuristic: Look for red text close to inputs (often validation errors)
+    // This is a bit expensive but useful for non-standard forms
+    document.querySelectorAll('span, div, p, label').forEach(el => {
+      // Optimization: Skip if too much text
+      if (!el.textContent || el.textContent.length > 100) return;
+      
+      const style = window.getComputedStyle(el);
+      const color = style.color; // e.g. "rgb(255, 0, 0)"
+      
+      let isRed = false;
+      // Parse RGB
+      const rgbMatch = color.match(/rgb\((\d+),\s*(\d+),\s*(\d+)\)/);
+      if (rgbMatch) {
+          const [_, r, g, b] = rgbMatch.map(Number);
+          // Red-ish color: R is high, G and B are lower
+          // Tailwind red-500 is roughly 239, 68, 68
+          if (r > 200 && g < 100 && b < 100) { 
+             isRed = true;
+          }
+      } else if (color === 'red') {
+          isRed = true;
+      }
+
+      // Check class names commonly used for errors
+      const className = (el.className && typeof el.className === 'string') ? el.className : '';
+      const isErrorClass = className.includes('error') || 
+                           className.includes('invalid') || 
+                           className.includes('warning') ||
+                           className.includes('text-red-'); // Tailwind red text
+
+      if (isRed || isErrorClass) {
+         if (style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0') {
+             // Only add if it looks like a message
+             const text = el.textContent?.trim();
+             if (text && text.length > 0) {
+                 addError(`Possible Error: ${text}`);
+             }
+         }
+      }
+    });
+
+    return errors;
   }
 }

@@ -1,0 +1,120 @@
+<div class="booking-form">
+  <h2>Flight Booking Simulation</h2>
+  <div style="margin-bottom: 20px; padding: 15px; border: 1px solid #eee; border-radius: 5px;">
+    <h3>1. Flight Details</h3>
+    <form id="flight-form" onsubmit="event.preventDefault();">
+      <div style="display: flex; gap: 10px; margin-bottom: 15px;">
+        <div style="flex: 1;">
+          <label for="from" style="display: block; margin-bottom: 5px;">From:</label>
+          <input type="text" id="from" name="from" placeholder="City or Airport" style="width: 100%; padding: 8px;">
+        </div>
+        <div style="flex: 1;">
+          <label for="to" style="display: block; margin-bottom: 5px;">To:</label>
+          <input type="text" id="to" name="to" placeholder="City or Airport" style="width: 100%; padding: 8px;">
+        </div>
+      </div>
+      
+      <div style="display: flex; gap: 10px; margin-bottom: 15px;">
+        <div style="flex: 1;">
+          <label for="date" style="display: block; margin-bottom: 5px;">Date:</label>
+          <input type="date" id="date" name="date" style="width: 100%; padding: 8px;">
+        </div>
+        <div style="flex: 1;">
+          <label for="class" style="display: block; margin-bottom: 5px;">Class:</label>
+          <select id="class" name="class" style="width: 100%; padding: 8px;">
+            <option value="economy">Economy</option>
+            <option value="business">Business</option>
+            <option value="first">First Class</option>
+          </select>
+        </div>
+      </div>
+      
+      <div style="margin-bottom: 15px;">
+        <label style="display: flex; align-items: center;">
+          <input type="checkbox" name="direct" style="margin-right: 10px;">
+          Direct flights only
+        </label>
+      </div>
+    </form>
+  </div>
+
+  <div style="margin-bottom: 20px; padding: 15px; border: 1px solid #eee; border-radius: 5px;">
+    <h3>2. Passenger Details</h3>
+    <table style="width: 100%; border-collapse: collapse;">
+      <thead>
+        <tr style="background: #f8f9fa; text-align: left;">
+          <th style="padding: 10px; border-bottom: 1px solid #ddd;">Passenger Name</th>
+          <th style="padding: 10px; border-bottom: 1px solid #ddd;">Passport Number</th>
+          <th style="padding: 10px; border-bottom: 1px solid #ddd;">Age</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td style="padding: 10px; border-bottom: 1px solid #eee;">
+            <input type="text" placeholder="Passenger 1 Name" style="width: 90%; padding: 5px;">
+          </td>
+          <td style="padding: 10px; border-bottom: 1px solid #eee;">
+            <input type="text" placeholder="Passport No." style="width: 90%; padding: 5px;">
+          </td>
+          <td style="padding: 10px; border-bottom: 1px solid #eee;">
+            <input type="number" placeholder="Age" style="width: 60px; padding: 5px;">
+          </td>
+        </tr>
+        <tr>
+          <td style="padding: 10px; border-bottom: 1px solid #eee;">
+            <input type="text" placeholder="Passenger 2 Name" style="width: 90%; padding: 5px;">
+          </td>
+          <td style="padding: 10px; border-bottom: 1px solid #eee;">
+            <input type="text" placeholder="Passport No." style="width: 90%; padding: 5px;">
+          </td>
+          <td style="padding: 10px; border-bottom: 1px solid #eee;">
+            <input type="number" placeholder="Age" style="width: 60px; padding: 5px;">
+          </td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div style="margin-bottom: 20px; padding: 15px; border: 1px solid #eee; border-radius: 5px;">
+    <h3>3. Payment Information</h3>
+    <div style="margin-bottom: 15px;">
+      <label for="card-number" style="display: block; margin-bottom: 5px;">Card Number:</label>
+      <input type="text" id="card-number" placeholder="0000 0000 0000 0000" style="width: 100%; padding: 8px;">
+    </div>
+    
+    <div style="display: flex; gap: 10px; margin-bottom: 15px;">
+      <div style="flex: 1;">
+        <label for="card-expiry" style="display: block; margin-bottom: 5px;">Expiry (MM/YY):</label>
+        <input type="text" id="card-expiry" placeholder="MM/YY" style="width: 100%; padding: 8px;">
+      </div>
+      <div style="flex: 1;">
+        <label for="card-cvc" style="display: block; margin-bottom: 5px;">CVC:</label>
+        <input type="text" id="card-cvc" placeholder="123" style="width: 100%; padding: 8px;">
+      </div>
+    </div>
+
+    <button onclick="submitBooking()" 
+            style="width: 100%; background: #28a745; color: white; border: none; padding: 15px; font-size: 16px; cursor: pointer; border-radius: 5px;">
+      Confirm Booking & Pay
+    </button>
+  </div>
+</div>
+
+<script>
+  function submitBooking() {
+    const from = document.getElementById('from').value || 'Hanoi';
+    const to = document.getElementById('to').value || 'Da Nang';
+    
+    // Replace content with success message so Agent can see it
+    document.querySelector('.booking-form').innerHTML = `
+      <div style='padding: 30px; background: #d4edda; color: #155724; border: 1px solid #c3e6cb; border-radius: 5px; text-align: center;'>
+        <h2 style='margin-top: 0;'>✅ Booking Confirmed!</h2>
+        <p style='font-size: 18px;'>Flight from <strong>\${from}</strong> to <strong>\${to}</strong> has been successfully booked.</p>
+        <p>Passenger details and payment information have been processed.</p>
+        <p style='margin-top: 20px; font-size: 14px; color: #666;'>Transaction ID: #BK${Math.floor(Math.random()*100000)}</p>
+      </div>
+    `;
+  }
+</script>
+  </div>
+</div>

@@ -17,6 +17,7 @@ interface InteractiveElement {
     className?: string;
     href?: string;
     value?: string;
+    checked?: boolean;
     isVisible: boolean;
     isEnabled: boolean;
     rect: DOMRect;
@@ -33,6 +34,11 @@ interface PageContext {
     tables: TableInfo[];
     links: LinkInfo[];
     headings: HeadingInfo[];
+    errors: ErrorInfo[];
+}
+interface ErrorInfo {
+    message: string;
+    relatedElementIndex?: number;
 }
 interface FormInfo {
     index: number;
@@ -93,6 +99,7 @@ declare class DOMAnalyzer {
     private analyzeTables;
     private extractLinks;
     private extractHeadings;
+    private analyzeErrors;
 }
 
 /**
@@ -584,6 +591,10 @@ interface LangChainConfig {
      */
     onAction?: (action: WebAction, result: ActionResult) => void;
     /**
+     * Callback when action starts (useful for state saving before navigation)
+     */
+    onActionStart?: (action: WebAction) => void;
+    /**
      * Callback when thinking/reasoning
      */
     onThink?: (thought: string) => void;
@@ -595,6 +606,20 @@ interface LangChainConfig {
      * Max retries for parsing
      */
     maxRetries?: number;
+    /**
+     * Whether to use native structured output (if available).
+     * Set to false to force prompt engineering (useful for models with partial schema support like Gemini).
+     * @default true
+     */
+    useStructuredOutput?: boolean;
+    /**
+     * Custom instructions or skills to guide the agent
+     */
+    skills?: string;
+    /**
+     * Max tokens for LLM response
+     */
+    maxTokens?: number;
 }
 /**
  * LangChain-powered Web Agent with structured output
@@ -604,7 +629,18 @@ declare class LangChainWebAgent {
     private executor;
     private config;
     private chatModel;
+    private history;
+    private results;
+    private lastAction;
     constructor(config?: LangChainConfig);
+    /**
+     * Export current agent state
+     */
+    exportState(): string;
+    /**
+     * Import agent state
+     */
+    importState(stateJson: string): void;
     /**
      * Set the LangChain chat model
      * Use this if you want to configure the model separately
@@ -635,13 +671,21 @@ declare class LangChainWebAgent {
         actions?: WebAction[];
     }>;
     /**
-     * Execute a task automatically using LangChain
+     * Execute a task automatically using Planner-Actor architecture
      */
-    execute(task: string, maxSteps?: number): Promise<ActionResult[]>;
+    execute(task: string, maxSteps?: number, resume?: boolean): Promise<ActionResult[]>;
+    /**
+     * Simple ReAct execution loop (Legacy/Fallback)
+     */
+    private executeSimple;
     /**
      * Chat using LangChain model with structured output
      */
     private chatWithLangChain;
+    /**
+     * Helper to call API endpoint
+     */
+    private callAPI;
     /**
      * Simple API call fallback
      */
@@ -660,25 +704,27 @@ declare class LangChainWebAgent {
  * Create agent with OpenAI model
  * Requires @langchain/openai to be installed: npm i @langchain/openai
  */
-declare function createOpenAIAgent(apiKey: string, modelName?: string): Promise<LangChainWebAgent>;
+declare function createOpenAIAgent(apiKey: string, modelName?: string, options?: Partial<LangChainConfig>): Promise<LangChainWebAgent>;
 /**
  * Create agent with Anthropic Claude model
  * Requires @langchain/anthropic to be installed: npm i @langchain/anthropic
  */
-declare function createAnthropicAgent(apiKey: string, modelName?: string): Promise<LangChainWebAgent>;
+declare function createAnthropicAgent(apiKey: string, modelName?: string, options?: Partial<LangChainConfig>): Promise<LangChainWebAgent>;
 /**
  * Create agent with Google Gemini model
  * Requires @langchain/google-genai to be installed: npm i @langchain/google-genai
  */
-declare function createGeminiAgent(apiKey: string, modelName?: string): Promise<LangChainWebAgent>;
+declare function createGeminiAgent(apiKey: string, modelName?: string, options?: Partial<LangChainConfig>): Promise<LangChainWebAgent>;
 /**
- * Create agent with custom OpenAI-compatible API (like MISA AI)
+ * Create agent with custom OpenAI-compatible API (like MISA AI, Ollama, vLLM)
+ * Tries to use ChatOpenAI if available to enable Planner capabilities.
  */
 declare function createCustomAgent(config: {
-    apiEndpoint: string;
     apiKey: string;
+    baseURL?: string;
+    apiEndpoint?: string;
     modelName?: string;
-}): LangChainWebAgent;
+}, options?: Partial<LangChainConfig>): Promise<LangChainWebAgent>;
 
 /**
  * web-agent-sdk - Universal Web Agent SDK
