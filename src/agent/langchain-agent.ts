@@ -119,6 +119,11 @@ export interface LangChainConfig {
    * Callback when action is executed
    */
   onAction?: (action: WebAction, result: ActionResult) => void;
+
+  /**
+   * Callback when action starts (useful for state saving before navigation)
+   */
+  onActionStart?: (action: WebAction) => void;
   
   /**
    * Callback when thinking/reasoning
@@ -146,6 +151,11 @@ export interface LangChainConfig {
    * Custom instructions or skills to guide the agent
    */
   skills?: string;
+
+  /**
+   * Max tokens for LLM response
+   */
+  maxTokens?: number;
 }
 
 /**
@@ -189,6 +199,7 @@ For MULTIPLE ACTIONS (like filling a form), respond with:
 RULES:
 - Always use element index from the page context
 - Always include reasoning for your actions
+- Pay attention to ERRORS & WARNINGS in the page state. If validation errors are present, fix them before proceeding.
 - Output valid JSON only - no markdown, no explanation text outside JSON`;
 
 /**
@@ -199,6 +210,9 @@ export class LangChainWebAgent {
   private executor: ActionExecutor;
   private config: LangChainConfig;
   private chatModel: unknown; // Will be typed when LangChain is available
+  private history: string[] = [];
+  private results: ActionResult[] = [];
+  private lastAction: WebAction | null = null;
   
   constructor(config: LangChainConfig = {}) {
     this.config = {
@@ -210,6 +224,29 @@ export class LangChainWebAgent {
     this.analyzer = new DOMAnalyzer();
     this.executor = new ActionExecutor(this.analyzer);
     this.chatModel = config.model;
+  }
+
+  /**
+   * Export current agent state
+   */
+  exportState(): string {
+    return JSON.stringify({
+      history: this.history,
+      results: this.results
+    });
+  }
+
+  /**
+   * Import agent state
+   */
+  importState(stateJson: string): void {
+    try {
+      const state = JSON.parse(stateJson);
+      this.history = state.history || [];
+      this.results = state.results || [];
+    } catch (e) {
+      this.log(`Error importing state: ${e}`);
+    }
   }
 
   /**
@@ -240,31 +277,55 @@ export class LangChainWebAgent {
    * Execute a single action
    */
   async executeAction(action: WebAction): Promise<ActionResult> {
+    // General Loop Detection
+    if (this.lastAction && action.action !== 'scroll' && action.action !== 'wait') {
+       const cleanA = { ...action, reasoning: '' };
+       const cleanB = { ...this.lastAction, reasoning: '' };
+       if (JSON.stringify(cleanA) === JSON.stringify(cleanB)) {
+           const loopMsg = `Loop detected: You just performed this exact action (${action.action}). Try something else.`;
+           this.log(loopMsg);
+           return { success: false, action: action.action as any, message: loopMsg };
+       }
+    }
+    this.lastAction = action;
+
+    // Optimistic history update
+    this.history.push(`Action: ${action.action} (executing)`);
+    this.config.onActionStart?.(action);
+
     let result: ActionResult;
     
-    switch (action.action) {
-      case 'click':
-        result = await this.executor.execute('click', { index: action.index });
-        break;
-      case 'type':
-        result = await this.executor.execute('type', { index: action.index, text: action.text });
-        break;
-      case 'select':
-        result = await this.executor.execute('select', { index: action.index, value: action.value });
-        break;
-      case 'scroll':
-        result = await this.executor.execute('scroll', { direction: action.direction });
-        break;
-      case 'wait':
-        await new Promise(r => setTimeout(r, action.ms || 1000));
-        result = { success: true, action: 'wait', message: `Waited ${action.ms || 1000}ms` };
-        break;
-      case 'done':
-        result = { success: true, action: 'done', message: action.reasoning };
-        break;
-      default:
-        result = { success: false, action: 'wait', message: 'Unknown action' };
+    try {
+      switch (action.action) {
+        case 'click':
+          result = await this.executor.execute('click', { index: action.index });
+          break;
+        case 'type':
+          result = await this.executor.execute('type', { index: action.index, text: action.text });
+          break;
+        case 'select':
+          result = await this.executor.execute('select', { index: action.index, value: action.value });
+          break;
+        case 'scroll':
+          result = await this.executor.execute('scroll', { direction: action.direction });
+          break;
+        case 'wait':
+          await new Promise(r => setTimeout(r, action.ms || 1000));
+          result = { success: true, action: 'wait', message: `Waited ${action.ms || 1000}ms` };
+          break;
+        case 'done':
+          result = { success: true, action: 'done', message: action.reasoning };
+          break;
+        default:
+          result = { success: false, action: 'wait', message: 'Unknown action' };
+      }
+    } catch (e) {
+      result = { success: false, action: action.action as any, message: `Failed: ${e}` };
     }
+
+    // Update history with final result
+    this.history[this.history.length - 1] = `Action: ${action.action} (${result.message})`;
+    this.results.push(result);
 
     this.config.onAction?.(action, result);
     this.log(`Action: ${action.action} - ${result.message}`);
@@ -312,24 +373,53 @@ export class LangChainWebAgent {
   /**
    * Execute a task automatically using Planner-Actor architecture
    */
-  async execute(task: string, maxSteps = 15): Promise<ActionResult[]> {
-    const allResults: ActionResult[] = [];
-    const history: string[] = [];
+  async execute(task: string, maxSteps = 10, resume = false): Promise<ActionResult[]> {
+    if (!resume) {
+      this.results = [];
+      this.history = [];
+    }
     
-    for (let step = 0; step < maxSteps; step++) {
+    // Continue from previous step count
+    const startStep = this.results.length > 0 ? Math.floor(this.history.length / 2) : 0;
+    
+    for (let step = startStep; step < maxSteps; step++) {
       const pageContext = this.getPageDescription();
       
       this.log(`Planning step ${step + 1}`);
       
+      // Add urgency if running out of steps
+      let urgencyInstruction = "";
+      if (maxSteps - step <= 3) {
+        urgencyInstruction = `\n\nCRITICAL WARNING: You have ${maxSteps - step} steps remaining. You MUST conclude the task immediately. If you cannot finish, output "DONE: <summary of what was achieved and what failed>". Do NOT start new exploration actions.`;
+      }
+
       try {
         const plannerSystemPrompt = `You are a Browser Agent Planner.
 Your goal is to complete the user's task on the current page.
-1. Analyze the PAGE STATE and ACTION HISTORY.
-2. VERIFY if the task is already completed based on the state (e.g. success message visible, data updated).
-3. If COMPLETED, output exactly: "DONE"
-4. If NOT COMPLETED, provide the NEXT STEP. 
+${urgencyInstruction}
+
+1. CRITICAL: CHECK FOR SUCCESS FIRST.
+   - Look for "Thank you", "Order confirmed", "Success", or similar messages.
+   - Look for success modals or redirect pages.
+   - If success is detected, output exactly: "DONE". IGNORE any validation errors if the task is already done.
+
+2. Analyze the PAGE STATE (especially ERRORS & WARNINGS section) and ACTION HISTORY.
+
+3. CHECK FOR ERRORS: If there are validation errors or warnings AND the task is NOT done, your next step MUST be to fix them. Do not keep submitting if there are errors.
+
+4. If NOT COMPLETED and NO ERRORS, provide the NEXT STEP. 
    - Group related actions together (e.g. "Fill all form fields", "Enter details and click submit").
    - Do not break down into single clicks unless necessary.
+
+5. AMBIGUITY CHECK: If the user request is unclear, ambiguous, or missing critical information, output: "ASK: <your question>". IMPORTANT: Do not make up information.
+
+6. INTERACTIVE COMPLETION: If the task is DONE, instead of just "DONE", you can output "DONE: <summary>". You can also ask what the user wants to do next.
+
+7. ANY INFORMATION MISSING: If you lack critical information to proceed (e.g. user details, payment info), output: "ASK: <your question>". IMPORTANT: Do not make up information.
+
+8. ALWAYS keep the USER REQUEST in mind when planning your steps.
+
+9. IMPORTANT: NEVER perform actions that would SUBMIT or FINALIZE transactions without explicit instruction.
 
 Task: ${task}
 
@@ -339,7 +429,7 @@ ${this.config.skills ? `ADDITIONAL SKILLS/INSTRUCTIONS:\n${this.config.skills}` 
 ${pageContext}
 
 ACTION HISTORY:
-${history.join('\n')}
+${this.history.join('\n')}
 
 What is the next step?`;
 
@@ -364,8 +454,19 @@ What is the next step?`;
         
         this.log(`Plan: ${plan}`);
         
+        if (plan.startsWith('ASK:')) {
+          this.log(`Agent Question: ${plan.substring(4).trim()}`);
+          // Stop execution to let user respond
+          break;
+        }
+
         if (plan.toUpperCase().startsWith('DONE') || plan.includes('successfully booked')) {
           this.log('Task verified as complete');
+          // Save completion to history so it persists across reloads/sessions
+          this.history.push(`Completion: ${plan}`);
+          if (plan.length > 4) {
+             this.log(plan.substring(5).trim());
+          }
           break;
         }
 
@@ -374,11 +475,10 @@ What is the next step?`;
         const { actions, response } = await this.chat(`Original Task Context: ${task}\n\nExecute this step: ${plan}`);
         
         if (actions && actions.length > 0) {
-          const results = await this.executeActions(actions);
-          allResults.push(...results);
-          results.forEach(r => history.push(`Action: ${r.action} (${r.message})`));
+          await this.executeActions(actions);
+          // History is updated inside executeAction now
         } else {
-          history.push(`Observation: ${response}`);
+          this.history.push(`Observation: ${response}`);
         }
         
         // Wait for page updates
@@ -393,13 +493,14 @@ What is the next step?`;
       }
     }
     
-    return allResults;
+    return this.results;
   }
 
   /**
    * Simple ReAct execution loop (Legacy/Fallback)
    */
   private async executeSimple(task: string, maxSteps = 10): Promise<ActionResult[]> {
+    const allResults: ActionResult[] = [];
     const history: string[] = [];
     
     for (let step = 0; step < maxSteps; step++) {
@@ -535,6 +636,7 @@ What is the next step?`]
         model: this.config.modelName || 'gpt-4',
         messages,
         temperature: 0.3,
+        max_tokens: this.config.maxTokens,
         ...(jsonMode ? { response_format: { type: 'json_object' } } : {}),
       }),
     });
@@ -663,6 +765,7 @@ export async function createOpenAIAgent(
       apiKey, 
       modelName,
       temperature: 0.3,
+      maxTokens: options.maxTokens,
     });
     return new LangChainWebAgent({ model, debug: true, ...options });
   } catch {
@@ -681,7 +784,11 @@ export async function createOpenAIAgent(
  * Create agent with Anthropic Claude model
  * Requires @langchain/anthropic to be installed: npm i @langchain/anthropic
  */
-export async function createAnthropicAgent(apiKey: string, modelName = 'claude-3-sonnet-20240229'): Promise<LangChainWebAgent> {
+export async function createAnthropicAgent(
+  apiKey: string, 
+  modelName = 'claude-3-sonnet-20240229',
+  options: Partial<LangChainConfig> = {}
+): Promise<LangChainWebAgent> {
   try {
     // @ts-ignore - Optional dependency, users need to install @langchain/anthropic
     const { ChatAnthropic } = await import('@langchain/anthropic');
@@ -689,11 +796,12 @@ export async function createAnthropicAgent(apiKey: string, modelName = 'claude-3
       apiKey, 
       modelName,
       temperature: 0.3,
+      maxTokens: options.maxTokens,
     });
-    return new LangChainWebAgent({ model, debug: true });
+    return new LangChainWebAgent({ model, debug: true, ...options });
   } catch {
     console.warn('@langchain/anthropic not installed');
-    return new LangChainWebAgent({ debug: true });
+    return new LangChainWebAgent({ debug: true, ...options });
   }
 }
 
@@ -701,7 +809,11 @@ export async function createAnthropicAgent(apiKey: string, modelName = 'claude-3
  * Create agent with Google Gemini model
  * Requires @langchain/google-genai to be installed: npm i @langchain/google-genai
  */
-export async function createGeminiAgent(apiKey: string, modelName = 'gemini-pro'): Promise<LangChainWebAgent> {
+export async function createGeminiAgent(
+  apiKey: string, 
+  modelName = 'gemini-pro', 
+  options: Partial<LangChainConfig> = {}
+): Promise<LangChainWebAgent> {
   try {
     // @ts-ignore - Optional dependency, users need to install @langchain/google-genai
     const { ChatGoogleGenerativeAI } = await import('@langchain/google-genai');
@@ -709,12 +821,13 @@ export async function createGeminiAgent(apiKey: string, modelName = 'gemini-pro'
       apiKey, 
       modelName,
       temperature: 0.3,
+      maxOutputTokens: options.maxTokens,
     });
     // Disable structured output for Gemini by default due to schema compatibility issues (const keyword)
-    return new LangChainWebAgent({ model, debug: true, useStructuredOutput: false });
+    return new LangChainWebAgent({ model, debug: true, useStructuredOutput: false, ...options });
   } catch {
     console.warn('@langchain/google-genai not installed');
-    return new LangChainWebAgent({ debug: true });
+    return new LangChainWebAgent({ debug: true, ...options });
   }
 }
 
@@ -743,6 +856,7 @@ export async function createCustomAgent(
         baseURL: baseUrl,
       },
       temperature: 0,
+      maxTokens: options.maxTokens,
     });
     return new LangChainWebAgent({ model, debug: true, ...options });
   } catch {

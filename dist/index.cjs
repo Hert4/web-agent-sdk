@@ -47,7 +47,8 @@ var DOMAnalyzer = class {
       forms: this.analyzeForms(elements),
       tables: this.analyzeTables(),
       links: this.extractLinks(elements),
-      headings: this.extractHeadings()
+      headings: this.extractHeadings(),
+      errors: this.analyzeErrors(elements)
     };
     return this.lastAnalysis;
   }
@@ -61,7 +62,7 @@ var DOMAnalyzer = class {
    * Generate human-readable description of the page state
    */
   getStateDescription() {
-    const ctx = this.lastAnalysis || this.analyze();
+    const ctx = this.analyze();
     let description = `# Page: ${ctx.title}
 URL: ${ctx.url}
 
@@ -70,6 +71,16 @@ URL: ${ctx.url}
       description += `Description: ${ctx.description}
 
 `;
+    }
+    if (ctx.errors.length > 0) {
+      description += `## \u26A0\uFE0F ERRORS & WARNINGS
+`;
+      ctx.errors.forEach((err) => {
+        const related = err.relatedElementIndex !== void 0 ? ` (related to element [${err.relatedElementIndex}])` : "";
+        description += `! ${err.message}${related}
+`;
+      });
+      description += "\n";
     }
     if (ctx.headings.length > 0) {
       description += `## Page Structure
@@ -99,7 +110,14 @@ URL: ${ctx.url}
     ctx.elements.slice(0, 50).forEach((el) => {
       const label = el.ariaLabel || el.text || el.placeholder || el.name || el.tagName;
       const truncated = label.length > 50 ? label.substring(0, 47) + "..." : label;
-      description += `[${el.index}] ${el.type}: ${truncated}
+      let extra = "";
+      if (el.value && el.value !== label && el.value !== "on") {
+        extra = ` (value: "${el.value}")`;
+      }
+      if (el.type.includes("checkbox") || el.type.includes("radio")) {
+        extra = el.checked ? " [CHECKED]" : " [UNCHECKED]";
+      }
+      description += `[${el.index}] ${el.type}: ${truncated}${extra}
 `;
     });
     if (ctx.elements.length > 50) {
@@ -137,6 +155,7 @@ URL: ${ctx.url}
         className: el.className || void 0,
         href: el.href || void 0,
         value: el.value || void 0,
+        checked: el.checked || false,
         isVisible: true,
         isEnabled: !el.disabled,
         rect,
@@ -204,11 +223,14 @@ URL: ${ctx.url}
   getUniqueSelector(el) {
     if (el.id) return `#${el.id}`;
     const tag = el.tagName.toLowerCase();
-    const classes = Array.from(el.classList).slice(0, 2).join(".");
+    const classes = Array.from(el.classList).slice(0, 2).map((c) => CSS.escape(c)).join(".");
     if (classes) {
       const selector = `${tag}.${classes}`;
-      if (document.querySelectorAll(selector).length === 1) {
-        return selector;
+      try {
+        if (document.querySelectorAll(selector).length === 1) {
+          return selector;
+        }
+      } catch (e) {
       }
     }
     const parent = el.parentElement;
@@ -297,6 +319,67 @@ URL: ${ctx.url}
     });
     return headings;
   }
+  analyzeErrors(elements) {
+    const errors = [];
+    const seenMessages = /* @__PURE__ */ new Set();
+    const addError = (msg, index) => {
+      const key = `${msg}-${index}`;
+      if (!seenMessages.has(key)) {
+        seenMessages.add(key);
+        errors.push({ message: msg, relatedElementIndex: index });
+      }
+    };
+    elements.forEach((el) => {
+      const domEl = this.elementCache.get(el.index);
+      if (domEl instanceof HTMLInputElement || domEl instanceof HTMLSelectElement || domEl instanceof HTMLTextAreaElement) {
+        if (!domEl.validity.valid) {
+          addError(`Validation Error: ${domEl.validationMessage}`, el.index);
+        }
+      }
+      if (domEl?.getAttribute("aria-invalid") === "true") {
+        const errId = domEl.getAttribute("aria-errormessage");
+        let msg = "Invalid input value";
+        if (errId) {
+          const errEl = document.getElementById(errId);
+          if (errEl?.textContent) msg = errEl.textContent.trim();
+        }
+        addError(msg, el.index);
+      }
+    });
+    document.querySelectorAll('[role="alert"]').forEach((el) => {
+      const text = el.textContent?.trim();
+      const style = window.getComputedStyle(el);
+      if (text && style.display !== "none" && style.visibility !== "hidden" && style.opacity !== "0") {
+        addError(`Alert: ${text}`);
+      }
+    });
+    document.querySelectorAll("span, div, p, label").forEach((el) => {
+      if (!el.textContent || el.textContent.length > 100) return;
+      const style = window.getComputedStyle(el);
+      const color = style.color;
+      let isRed = false;
+      const rgbMatch = color.match(/rgb\((\d+),\s*(\d+),\s*(\d+)\)/);
+      if (rgbMatch) {
+        const [_, r, g, b] = rgbMatch.map(Number);
+        if (r > 200 && g < 100 && b < 100) {
+          isRed = true;
+        }
+      } else if (color === "red") {
+        isRed = true;
+      }
+      const className = el.className && typeof el.className === "string" ? el.className : "";
+      const isErrorClass = className.includes("error") || className.includes("invalid") || className.includes("warning") || className.includes("text-red-");
+      if (isRed || isErrorClass) {
+        if (style.display !== "none" && style.visibility !== "hidden" && style.opacity !== "0") {
+          const text = el.textContent?.trim();
+          if (text && text.length > 0) {
+            addError(`Possible Error: ${text}`);
+          }
+        }
+      }
+    });
+    return errors;
+  }
 };
 
 // src/actions/executor.ts
@@ -355,9 +438,12 @@ var ActionExecutor = class {
     await this.delay(100);
     element.focus();
     element.click();
-    element.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
-    element.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
-    element.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    const tag = element.tagName.toLowerCase();
+    if (!["input", "button", "select", "textarea"].includes(tag)) {
+      element.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+      element.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+      element.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    }
     return {
       success: true,
       action: "click",
@@ -373,19 +459,47 @@ var ActionExecutor = class {
     element.scrollIntoView({ behavior: "smooth", block: "center" });
     await this.delay(50);
     element.focus();
+    const inputType = element.getAttribute("type") || "text";
+    const directValueTypes = ["date", "time", "datetime-local", "month", "week", "color", "range", "hidden"];
+    if (inputType === "checkbox" || inputType === "radio") {
+      const shouldCheck = ["true", "yes", "on", "1", "checked"].includes(text.toLowerCase());
+      element.checked = shouldCheck;
+      element.dispatchEvent(new Event("change", { bubbles: true }));
+      element.dispatchEvent(new Event("input", { bubbles: true }));
+      return {
+        success: true,
+        action: "type",
+        message: `${shouldCheck ? "Checked" : "Unchecked"} ${inputType} element [${index}]`,
+        elementInfo: { index }
+      };
+    }
+    if (directValueTypes.includes(inputType)) {
+      element.value = text;
+      element.dispatchEvent(new Event("input", { bubbles: true }));
+      element.dispatchEvent(new Event("change", { bubbles: true }));
+      return {
+        success: true,
+        action: "type",
+        message: `Set value "${text}" for ${inputType} element [${index}]`,
+        elementInfo: { index }
+      };
+    }
     if (clear) {
       element.value = "";
       element.dispatchEvent(new Event("input", { bubbles: true }));
     }
-    for (const char of text) {
-      element.value += char;
-      element.dispatchEvent(new KeyboardEvent("keydown", { key: char, bubbles: true }));
-      element.dispatchEvent(new KeyboardEvent("keypress", { key: char, bubbles: true }));
-      element.dispatchEvent(new Event("input", { bubbles: true }));
-      element.dispatchEvent(new KeyboardEvent("keyup", { key: char, bubbles: true }));
-      await this.delay(10);
+    if (clear) {
+      element.value = text;
+    } else {
+      element.value += text;
     }
+    element.dispatchEvent(new Event("input", { bubbles: true }));
     element.dispatchEvent(new Event("change", { bubbles: true }));
+    if (text.length > 0) {
+      const lastChar = text[text.length - 1];
+      element.dispatchEvent(new KeyboardEvent("keydown", { key: lastChar, bubbles: true }));
+      element.dispatchEvent(new KeyboardEvent("keyup", { key: lastChar, bubbles: true }));
+    }
     return {
       success: true,
       action: "type",
@@ -409,12 +523,34 @@ var ActionExecutor = class {
     if (!element) {
       return { success: false, action: "select", message: `Element [${index}] not found` };
     }
-    element.value = value;
-    element.dispatchEvent(new Event("change", { bubbles: true }));
+    const options = Array.from(element.options);
+    let matchedOption = options.find((opt) => opt.value === value);
+    if (!matchedOption) {
+      matchedOption = options.find((opt) => opt.value.toLowerCase() === value.toLowerCase());
+    }
+    if (!matchedOption) {
+      matchedOption = options.find((opt) => opt.text === value);
+    }
+    if (!matchedOption) {
+      matchedOption = options.find((opt) => opt.text.toLowerCase() === value.toLowerCase());
+    }
+    if (!matchedOption) {
+      matchedOption = options.find((opt) => opt.text.toLowerCase().includes(value.toLowerCase()));
+    }
+    if (matchedOption) {
+      element.value = matchedOption.value;
+      element.dispatchEvent(new Event("change", { bubbles: true }));
+      element.dispatchEvent(new Event("input", { bubbles: true }));
+      return {
+        success: true,
+        action: "select",
+        message: `Selected "${matchedOption.text}" (value: ${matchedOption.value}) in element [${index}]`
+      };
+    }
     return {
-      success: true,
+      success: false,
       action: "select",
-      message: `Selected "${value}" in element [${index}]`
+      message: `Option "${value}" not found in element [${index}]. Available: ${options.map((o) => o.text).join(", ")}`
     };
   }
   scroll(direction, amount = 300) {
@@ -750,18 +886,44 @@ For MULTIPLE ACTIONS (like filling a form), respond with:
 RULES:
 - Always use element index from the page context
 - Always include reasoning for your actions
+- Pay attention to ERRORS & WARNINGS in the page state. If validation errors are present, fix them before proceeding.
 - Output valid JSON only - no markdown, no explanation text outside JSON`;
 var LangChainWebAgent = class {
-  // Will be typed when LangChain is available
   constructor(config = {}) {
+    // Will be typed when LangChain is available
+    this.history = [];
+    this.results = [];
+    this.lastAction = null;
     this.config = {
       debug: false,
       maxRetries: 3,
+      useStructuredOutput: true,
       ...config
     };
     this.analyzer = new DOMAnalyzer();
     this.executor = new ActionExecutor(this.analyzer);
     this.chatModel = config.model;
+  }
+  /**
+   * Export current agent state
+   */
+  exportState() {
+    return JSON.stringify({
+      history: this.history,
+      results: this.results
+    });
+  }
+  /**
+   * Import agent state
+   */
+  importState(stateJson) {
+    try {
+      const state = JSON.parse(stateJson);
+      this.history = state.history || [];
+      this.results = state.results || [];
+    } catch (e) {
+      this.log(`Error importing state: ${e}`);
+    }
   }
   /**
    * Set the LangChain chat model
@@ -788,30 +950,48 @@ var LangChainWebAgent = class {
    * Execute a single action
    */
   async executeAction(action) {
-    let result;
-    switch (action.action) {
-      case "click":
-        result = await this.executor.execute("click", { index: action.index });
-        break;
-      case "type":
-        result = await this.executor.execute("type", { index: action.index, text: action.text });
-        break;
-      case "select":
-        result = await this.executor.execute("select", { index: action.index, value: action.value });
-        break;
-      case "scroll":
-        result = await this.executor.execute("scroll", { direction: action.direction });
-        break;
-      case "wait":
-        await new Promise((r) => setTimeout(r, action.ms || 1e3));
-        result = { success: true, action: "wait", message: `Waited ${action.ms || 1e3}ms` };
-        break;
-      case "done":
-        result = { success: true, action: "done", message: action.reasoning };
-        break;
-      default:
-        result = { success: false, action: "wait", message: "Unknown action" };
+    if (this.lastAction && action.action !== "scroll" && action.action !== "wait") {
+      const cleanA = { ...action, reasoning: "" };
+      const cleanB = { ...this.lastAction, reasoning: "" };
+      if (JSON.stringify(cleanA) === JSON.stringify(cleanB)) {
+        const loopMsg = `Loop detected: You just performed this exact action (${action.action}). Try something else.`;
+        this.log(loopMsg);
+        return { success: false, action: action.action, message: loopMsg };
+      }
     }
+    this.lastAction = action;
+    this.history.push(`Action: ${action.action} (executing)`);
+    this.config.onActionStart?.(action);
+    let result;
+    try {
+      switch (action.action) {
+        case "click":
+          result = await this.executor.execute("click", { index: action.index });
+          break;
+        case "type":
+          result = await this.executor.execute("type", { index: action.index, text: action.text });
+          break;
+        case "select":
+          result = await this.executor.execute("select", { index: action.index, value: action.value });
+          break;
+        case "scroll":
+          result = await this.executor.execute("scroll", { direction: action.direction });
+          break;
+        case "wait":
+          await new Promise((r) => setTimeout(r, action.ms || 1e3));
+          result = { success: true, action: "wait", message: `Waited ${action.ms || 1e3}ms` };
+          break;
+        case "done":
+          result = { success: true, action: "done", message: action.reasoning };
+          break;
+        default:
+          result = { success: false, action: "wait", message: "Unknown action" };
+      }
+    } catch (e) {
+      result = { success: false, action: action.action, message: `Failed: ${e}` };
+    }
+    this.history[this.history.length - 1] = `Action: ${action.action} (${result.message})`;
+    this.results.push(result);
     this.config.onAction?.(action, result);
     this.log(`Action: ${action.action} - ${result.message}`);
     return result;
@@ -843,27 +1023,143 @@ var LangChainWebAgent = class {
     return this.chatWithAPI(message, pageContext);
   }
   /**
-   * Execute a task automatically using LangChain
+   * Execute a task automatically using Planner-Actor architecture
    */
-  async execute(task, maxSteps = 10) {
+  async execute(task, maxSteps = 15, resume = false) {
+    if (!resume) {
+      this.results = [];
+      this.history = [];
+    }
+    const startStep = this.results.length > 0 ? Math.floor(this.history.length / 2) : 0;
+    for (let step = startStep; step < maxSteps; step++) {
+      const pageContext = this.getPageDescription();
+      this.log(`Planning step ${step + 1}`);
+      try {
+        const plannerSystemPrompt = `You are a Browser Agent Planner.
+Your goal is to complete the user's task on the current page.
+
+1. CRITICAL: CHECK FOR SUCCESS FIRST.
+   - Look for "Thank you", "Order confirmed", "Success", or similar messages.
+   - Look for success modals or redirect pages.
+   - If success is detected, output exactly: "DONE". IGNORE any validation errors if the task is already done.
+
+2. Analyze the PAGE STATE (especially ERRORS & WARNINGS section) and ACTION HISTORY.
+
+3. CHECK FOR ERRORS: If there are validation errors or warnings AND the task is NOT done, your next step MUST be to fix them. Do not keep submitting if there are errors.
+
+4. If NOT COMPLETED and NO ERRORS, provide the NEXT STEP. 
+   - Group related actions together (e.g. "Fill all form fields", "Enter details and click submit").
+   - Do not break down into single clicks unless necessary.
+
+5. AMBIGUITY CHECK: If the user request is unclear, ambiguous, or missing critical information, output: "ASK: <your question>"
+
+6. INTERACTIVE COMPLETION: If the task is DONE, instead of just "DONE", you can output "DONE: <summary>". You can also ask what the user wants to do next.
+
+Task: ${task}
+
+${this.config.skills ? `ADDITIONAL SKILLS/INSTRUCTIONS:
+${this.config.skills}` : ""}`;
+        const plannerUserContent = `PAGE STATE:
+${pageContext}
+
+ACTION HISTORY:
+${this.history.join("\n")}
+
+What is the next step?`;
+        let plan = "";
+        if (this.chatModel) {
+          const planResponse = await this.chatModel.invoke([
+            ["system", plannerSystemPrompt],
+            ["human", plannerUserContent]
+          ]);
+          plan = planResponse.content.toString().trim();
+        } else {
+          plan = await this.callAPI([
+            { role: "system", content: plannerSystemPrompt },
+            { role: "user", content: plannerUserContent }
+          ], false);
+        }
+        this.log(`Plan: ${plan}`);
+        if (plan.startsWith("ASK:")) {
+          this.log(`Agent Question: ${plan.substring(4).trim()}`);
+          break;
+        }
+        if (plan.toUpperCase().startsWith("DONE") || plan.includes("successfully booked")) {
+          this.log("Task verified as complete");
+          if (plan.length > 4) {
+            this.log(plan.substring(5).trim());
+          }
+          break;
+        }
+        const { actions, response } = await this.chat(`Original Task Context: ${task}
+
+Execute this step: ${plan}`);
+        if (actions && actions.length > 0) {
+          await this.executeActions(actions);
+        } else {
+          this.history.push(`Observation: ${response}`);
+        }
+        await new Promise((r) => setTimeout(r, 1e3));
+      } catch (error) {
+        this.log(`Planning error: ${error}`);
+        break;
+      }
+    }
+    return this.results;
+  }
+  /**
+   * Simple ReAct execution loop (Legacy/Fallback)
+   */
+  async executeSimple(task, maxSteps = 10) {
     const allResults = [];
+    const history = [];
     for (let step = 0; step < maxSteps; step++) {
-      const { actions } = await this.chat(
-        step === 0 ? `Task: ${task}` : `Continue task: ${task}
-Previous results: ${allResults.map((r) => r.message).join(", ")}`
-      );
-      if (!actions || actions.length === 0) {
-        this.log("No actions returned");
-        break;
+      const pageContext = this.getPageDescription();
+      this.log(`Planning step ${step + 1}`);
+      try {
+        const planResponse = await this.chatModel.invoke([
+          ["system", `You are a Browser Agent Planner.
+Your goal is to complete the user's task on the current page.
+1. Analyze the PAGE STATE and ACTION HISTORY.
+2. VERIFY if the task is already completed based on the state (e.g. success message visible, data updated).
+3. If COMPLETED, output exactly: "DONE"
+4. If NOT COMPLETED, provide the NEXT STEP. 
+   - Group related actions together (e.g. "Fill all form fields", "Enter details and click submit").
+   - Do not break down into single clicks unless necessary.
+
+Task: ${task}
+
+${this.config.skills ? `ADDITIONAL SKILLS/INSTRUCTIONS:
+${this.config.skills}` : ""}`],
+          ["human", `PAGE STATE:
+${pageContext}
+
+ACTION HISTORY:
+${history.join("\n")}
+
+What is the next step?`]
+        ]);
+        const plan = planResponse.content.toString().trim();
+        this.log(`Plan: ${plan}`);
+        if (plan.toUpperCase().startsWith("DONE") || plan.includes("successfully booked")) {
+          this.log("Task verified as complete");
+          break;
+        }
+        const { actions, response } = await this.chat(`Original Task Context: ${task}
+
+Execute this step: ${plan}`);
+        if (actions && actions.length > 0) {
+          const results = await this.executeActions(actions);
+          allResults.push(...results);
+          results.forEach((r) => history.push(`Action: ${r.action} (${r.message})`));
+        } else {
+          history.push(`Observation: ${response}`);
+        }
+        await new Promise((r) => setTimeout(r, 1e3));
+      } catch (error) {
+        this.log(`Planning error: ${error}`);
+        return this.executeSimple(task, maxSteps - step);
       }
-      const results = await this.executeActions(actions);
-      allResults.push(...results);
-      const doneAction = actions.find((a) => a.action === "done");
-      if (doneAction) {
-        this.log(`Task complete: ${doneAction.reasoning}`);
-        break;
-      }
-      await new Promise((r) => setTimeout(r, 500));
     }
     return allResults;
   }
@@ -873,25 +1169,35 @@ Previous results: ${allResults.map((r) => r.message).join(", ")}`
   async chatWithLangChain(message, pageContext) {
     try {
       const model = this.chatModel;
-      if (model?.withStructuredOutput) {
-        const structuredModel = model.withStructuredOutput(WebActionsListSchema);
-        const response = await structuredModel.invoke([
-          { role: "system", content: STRUCTURED_SYSTEM_PROMPT },
-          { role: "user", content: `${pageContext}
+      if (this.config.useStructuredOutput && model?.withStructuredOutput) {
+        try {
+          const structuredModel = model.withStructuredOutput(WebActionsListSchema);
+          const response = await structuredModel.invoke([
+            ["system", `${STRUCTURED_SYSTEM_PROMPT}
 
-User request: ${message}` }
-        ]);
-        return {
-          response: response.summary,
-          actions: response.actions
-        };
+${this.config.skills ? `ADDITIONAL SKILLS:
+${this.config.skills}` : ""}`],
+            ["human", `${pageContext}
+
+User request: ${message}`]
+          ]);
+          return {
+            response: response.summary,
+            actions: response.actions
+          };
+        } catch (e) {
+          this.log(`Structured output failed, falling back to prompt engineering: ${e}`);
+        }
       }
       if (model?.invoke) {
         const response = await model.invoke([
-          { role: "system", content: STRUCTURED_SYSTEM_PROMPT },
-          { role: "user", content: `${pageContext}
+          ["system", `${STRUCTURED_SYSTEM_PROMPT}
 
-User request: ${message}` }
+${this.config.skills ? `ADDITIONAL SKILLS:
+${this.config.skills}` : ""}`],
+          ["human", `${pageContext}
+
+User request: ${message}`]
         ]);
         const parsed = this.parseActionsFromResponse(response.content);
         return {
@@ -905,6 +1211,30 @@ User request: ${message}` }
     return { response: "LangChain model not properly configured" };
   }
   /**
+   * Helper to call API endpoint
+   */
+  async callAPI(messages, jsonMode = false) {
+    if (!this.config.apiEndpoint || !this.config.apiKey) {
+      throw new Error("API config missing");
+    }
+    const response = await fetch(this.config.apiEndpoint, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${this.config.apiKey}`
+      },
+      body: JSON.stringify({
+        model: this.config.modelName || "gpt-4",
+        messages,
+        temperature: 0.3,
+        max_tokens: this.config.maxTokens,
+        ...jsonMode ? { response_format: { type: "json_object" } } : {}
+      })
+    });
+    const data = await response.json();
+    return data.choices?.[0]?.message?.content || "";
+  }
+  /**
    * Simple API call fallback
    */
   async chatWithAPI(message, pageContext) {
@@ -912,26 +1242,15 @@ User request: ${message}` }
       return this.mockResponse(message);
     }
     try {
-      const response = await fetch(this.config.apiEndpoint, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${this.config.apiKey}`
-        },
-        body: JSON.stringify({
-          model: this.config.modelName || "gpt-4",
-          messages: [
-            { role: "system", content: STRUCTURED_SYSTEM_PROMPT },
-            { role: "user", content: `${pageContext}
+      const content = await this.callAPI([
+        { role: "system", content: `${STRUCTURED_SYSTEM_PROMPT}
+
+${this.config.skills ? `ADDITIONAL SKILLS:
+${this.config.skills}` : ""}` },
+        { role: "user", content: `${pageContext}
 
 User request: ${message}` }
-          ],
-          temperature: 0.3,
-          response_format: { type: "json_object" }
-        })
-      });
-      const data = await response.json();
-      const content = data.choices?.[0]?.message?.content || "";
+      ], true);
       const parsed = this.parseActionsFromResponse(content);
       return {
         response: parsed.summary || content,
@@ -1005,60 +1324,81 @@ User request: ${message}` }
     this.config.onThink?.(message);
   }
 };
-async function createOpenAIAgent(apiKey, modelName = "gpt-4") {
+async function createOpenAIAgent(apiKey, modelName = "gpt-4", options = {}) {
   try {
     const { ChatOpenAI } = await import('@langchain/openai');
     const model = new ChatOpenAI({
       apiKey,
       modelName,
-      temperature: 0.3
+      temperature: 0.3,
+      maxTokens: options.maxTokens
     });
-    return new LangChainWebAgent({ model, debug: true });
+    return new LangChainWebAgent({ model, debug: true, ...options });
   } catch {
     console.warn("@langchain/openai not installed, using API fallback");
     return new LangChainWebAgent({
       apiEndpoint: "https://api.openai.com/v1/chat/completions",
       apiKey,
       modelName,
-      debug: true
+      debug: true,
+      ...options
     });
   }
 }
-async function createAnthropicAgent(apiKey, modelName = "claude-3-sonnet-20240229") {
+async function createAnthropicAgent(apiKey, modelName = "claude-3-sonnet-20240229", options = {}) {
   try {
     const { ChatAnthropic } = await import('@langchain/anthropic');
     const model = new ChatAnthropic({
       apiKey,
       modelName,
-      temperature: 0.3
+      temperature: 0.3,
+      maxTokens: options.maxTokens
     });
-    return new LangChainWebAgent({ model, debug: true });
+    return new LangChainWebAgent({ model, debug: true, ...options });
   } catch {
     console.warn("@langchain/anthropic not installed");
-    return new LangChainWebAgent({ debug: true });
+    return new LangChainWebAgent({ debug: true, ...options });
   }
 }
-async function createGeminiAgent(apiKey, modelName = "gemini-pro") {
+async function createGeminiAgent(apiKey, modelName = "gemini-pro", options = {}) {
   try {
     const { ChatGoogleGenerativeAI } = await import('@langchain/google-genai');
     const model = new ChatGoogleGenerativeAI({
       apiKey,
       modelName,
-      temperature: 0.3
+      temperature: 0.3,
+      maxOutputTokens: options.maxTokens
     });
-    return new LangChainWebAgent({ model, debug: true });
+    return new LangChainWebAgent({ model, debug: true, useStructuredOutput: false, ...options });
   } catch {
     console.warn("@langchain/google-genai not installed");
-    return new LangChainWebAgent({ debug: true });
+    return new LangChainWebAgent({ debug: true, ...options });
   }
 }
-function createCustomAgent(config) {
-  return new LangChainWebAgent({
-    apiEndpoint: config.apiEndpoint,
-    apiKey: config.apiKey,
-    modelName: config.modelName,
-    debug: true
-  });
+async function createCustomAgent(config, options = {}) {
+  const baseUrl = config.baseURL || config.apiEndpoint;
+  try {
+    const { ChatOpenAI } = await import('@langchain/openai');
+    const model = new ChatOpenAI({
+      apiKey: config.apiKey,
+      modelName: config.modelName,
+      configuration: {
+        baseURL: baseUrl
+      },
+      temperature: 0,
+      maxTokens: options.maxTokens
+    });
+    return new LangChainWebAgent({ model, debug: true, ...options });
+  } catch {
+    console.warn("@langchain/openai not installed, using API fallback (No Planner support)");
+    return new LangChainWebAgent({
+      apiEndpoint: baseUrl,
+      apiKey: config.apiKey,
+      modelName: config.modelName,
+      debug: true,
+      ...options
+    });
+  }
 }
 
 // src/index.ts
