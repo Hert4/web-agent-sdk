@@ -1,9 +1,38 @@
 # Web Agent SDK Documentation
 
-## Introduction
-`web-agent-sdk` is a professional-grade library for building AI-powered browser agents. It leverages LangChain to support state-of-the-art LLMs (Google Gemini, OpenAI, Anthropic Claude) and provides a robust Planner-Actor architecture for reliable web automation.
+## 1. Overview
+`web-agent-sdk` is a professional-grade framework for building AI-powered browser agents. Unlike traditional automation tools (Selenium, Playwright) that rely on brittle selectors, this SDK uses **LLM-based reasoning** to understand and interact with any webpage dynamically.
 
-## Installation
+It features a **Planner-Actor Architecture**:
+- **Planner**: Analyzes the page state and user goal to create a high-level plan.
+- **Actor (Executor)**: Translates the plan into precise DOM actions (click, type, scroll).
+
+## 2. Core Features
+
+### 🧠 Universal DOM Analyzer
+The SDK includes a sophisticated `DOMAnalyzer` that "sees" the page like a human user:
+- **Interactive Element Detection**: Automatically identifies clickable elements (`<a>`, `<button>`, inputs) and semantic roles (`role="button"`, `tabindex="0"`).
+- **Visibility Checks**: Ignores hidden elements (opacity: 0, display: none, off-screen).
+- **Form Analysis**: Associates labels with inputs, detects required fields.
+- **Error Detection**: Reads HTML5 validation errors, `aria-invalid` states, and `role="alert"` messages (to fix mistakes automatically).
+
+### 🤖 Multi-Model Support
+Built on top of LangChain, supporting top-tier LLMs:
+- **Google Gemini**: Optimized for speed and long context.
+- **OpenAI GPT-4**: High reasoning capability for complex tasks.
+- **Anthropic Claude**: Excellent for instruction following.
+- **Custom Models**: Connect to any OpenAI-compatible API (e.g., local LLMs, proxies).
+
+### 🛡️ Reliability Features
+- **Structured Output**: Enforces valid JSON actions using Zod schemas (preventing hallucinations).
+- **Loop Detection**: Automatically detects and breaks repetitive action loops.
+- **Auto-Correction**: If an action fails (e.g., element covered), the agent retries or replans.
+
+### 💾 State Management
+- **Persistence**: Export and import agent state to survive page reloads.
+- **Context Awareness**: Tracks conversation history and past actions.
+
+## 3. Installation
 
 ```bash
 npm install web-agent-sdk
@@ -11,132 +40,116 @@ npm install web-agent-sdk
 npm install @langchain/core
 ```
 
-## Quick Start
+## 4. API Reference
 
-### 1. Using with Google Gemini
+### Factory Functions
 
+#### `createGeminiAgent(apiKey, modelName, config)`
+Creates an agent using Google's Gemini models.
 ```typescript
-import { createGeminiAgent } from 'web-agent-sdk';
-
-const agent = await createGeminiAgent(process.env.GEMINI_API_KEY, 'gemini-3-flash-preview');
-await agent.execute('Find the cheapest keyboard on amazon.com');
+const agent = await createGeminiAgent(process.env.GEMINI_API_KEY, 'gemini-pro');
 ```
 
-### 2. Using with OpenAI
-
+#### `createOpenAIAgent(apiKey, modelName, config)`
+Creates an agent using OpenAI's GPT models.
 ```typescript
-import { createOpenAIAgent } from 'web-agent-sdk';
-
 const agent = await createOpenAIAgent(process.env.OPENAI_API_KEY, 'gpt-4o');
-await agent.execute('Login to the dashboard');
 ```
 
-## Interactive Elements & DOM Analysis
-
-The SDK uses an intelligent DOM Analyzer to identifying "interactive" elements on a page. The Agent can **only** interact with elements that are detected as interactive.
-
-### Supported Elements
-The Agent automatically detects elements matching these criteria:
-*   **Links**: `<a>` tags with an `href` attribute.
-*   **Buttons**: `<button>` tags, `input[type="submit"]`, `input[type="button"]`.
-*   **Inputs**: All `<input>` types (text, checkbox, radio, etc.), `<textarea>`, `<select>`.
-*   **Semantic Roles**: Elements with `role="button"`, `role="link"`, `role="checkbox"`, etc.
-*   **Focusable Elements**: Elements with a valid `tabindex` (not `-1`).
-*   **Clickable Elements**: Elements with an inline `onclick` attribute.
-
-### Best Practices for Compatibility
-If your website uses non-standard elements (e.g., a `<div>` or `<p>` acting as a button), the Agent might **not see it**. To ensure compatibility:
-
-1.  **Use Semantic HTML**: Prefer `<button>` over `<div>` for clickable actions.
-2.  **Add Accessibility Attributes**: If you must use a generic tag, add `role="button"` and `tabindex="0"`.
-    ```html
-    <!-- BAD: Agent ignores this -->
-    <div onclick="submit()">Submit</div>
-
-    <!-- GOOD: Agent sees this -->
-    <div role="button" tabindex="0" onclick="submit()">Submit</div>
-    ```
-3.  **Ensure Visibility**: The Agent ignores hidden elements (`display: none`, `visibility: hidden`, `opacity: 0`, or zero dimensions).
-
-## Configuration & Callbacks
-
-You can customize the agent's behavior and hook into its lifecycle using the configuration object.
-
+#### `createCustomAgent(config, options)`
+Connect to a custom endpoint (useful for Backend Proxy).
 ```typescript
-import { createGeminiAgent } from 'web-agent-sdk';
-
-const agent = await createGeminiAgent('API_KEY', 'model-name', {
-  // Debug mode: logs internal thoughts and actions to console
-  debug: true,
-
-  // Custom Skills: Guide the agent's behavior
-  skills: `
-    - Never making any finally submit if do not have user permission.
-    - Do not make up any information, if user not clearly make sure you ask user before fill any information.
-  `,
-
-  // Lifecycle Callbacks
-  
-  // Called when the agent "thinks" or plans (e.g. "I need to click the search bar")
-  onThink: (thought: string) => {
-    console.log('Thinking:', thought);
-  },
-
-  // Called IMMEDIATELY when an action is about to start
-  // Use this to save state before navigation happens!
-  onActionStart: (action: WebAction) => {
-    console.log('Starting:', action.action);
-    saveStateToLocalStorage(); 
-  },
-
-  // Called when an action completes (success or failure)
-  onAction: (action: WebAction, result: ActionResult) => {
-    console.log('Finished:', action.action, 'Success:', result.success);
-  },
-  
-  // Called when the page context is analyzed
-  onContext: (context: PageContext) => {
-    console.log('Page Title:', context.title);
-  }
+const agent = await createCustomAgent({
+  apiKey: 'unused', // If handled by proxy
+  baseURL: 'http://localhost:3000/api/chat' // Your backend proxy
 });
 ```
 
-## State Management & Persistence
+### LangChainWebAgent Class
 
-The SDK supports saving and restoring state, which is crucial for handling page reloads or long-running sessions.
+#### `execute(task: string, maxSteps?: number, resume?: boolean)`
+Main entry point. Executes a goal on the current page.
+- `task`: The user's instruction.
+- `maxSteps`: Safety limit (default 10).
+- `resume`: If `true`, continues from previous history. If `false` (default), starts fresh.
 
-### Saving State
+#### `setSkills(skills: string)`
+Updates the agent's system prompt with specific instructions. Useful for routing.
 ```typescript
-// Get a JSON string representing the full history
-const stateJson = agent.exportState();
-localStorage.setItem('agent-state', stateJson);
+agent.setSkills("You are on the Checkout page. Use mock data only.");
 ```
 
-### Resuming State
+#### `exportState()` / `importState(json)`
+Serialize/Deserialize the agent's memory (history, results). Essential for handling page navigation.
+
+#### Configuration (`LangChainConfig`)
+- `debug`: Enable console logs for internal thoughts.
+- `skills`: Initial system instructions.
+- `onThink`: Callback when the Planner generates a thought.
+- `onAction`: Callback when an action is executed.
+- `onActionStart`: Callback before an action (good for saving state).
+
+## 5. Integration Patterns & Best Practices
+
+### 🔒 Security: Backend Proxy Pattern
+**NEVER** expose API keys in the frontend. Use a proxy pattern:
+
+1.  **Frontend**: The SDK runs in the browser to access the DOM. Configure it to point to your backend.
+    ```typescript
+    // Proxy Class in Frontend
+    class BackendProxyModel {
+      async invoke(messages) {
+        const res = await fetch('/api/chat', { method: 'POST', body: JSON.stringify({ messages }) });
+        return await res.json();
+      }
+    }
+    const agent = new LangChainWebAgent({ model: new BackendProxyModel() });
+    ```
+2.  **Backend**: Receives the prompt, adds the API Key, and calls the LLM.
+
+### 🔄 Handling Page Navigation (Auto-Resume)
+Browsers destroy JS context on navigation. To create a continuous experience:
+
+1.  **Save State**: On every action, save `agent.exportState()` and the current `task` to `localStorage`.
+2.  **Restore on Load**: When the new page loads, check `localStorage`.
+3.  **Resume**: If a task was in progress (history exists but no "Completion" event), call `agent.execute(task, ..., true)`.
+
 ```typescript
+// Example Logic
 const savedState = localStorage.getItem('agent-state');
 if (savedState) {
   agent.importState(savedState);
-  // Pass 'true' as the 3rd argument to execute to indicate resumption
-  await agent.execute('Continue task...', 15, true);
+  // Check if last entry was NOT completion
+  if (!isTaskComplete(savedState)) {
+     agent.execute(savedTask, 10, true); // Resume!
+  }
 }
 ```
 
-### Handling Navigation (Page Reloads)
-Since a page reload destroys the JavaScript context, you must save state **before** the reload happens. 
-*   Use `onActionStart` to save state *optimistically* before every action.
-*   Use `window.addEventListener('beforeunload', ...)` as a backup.
+### 🧠 Context-Aware Prompts
+The Planner only sees the *current* task string. It doesn't know about previous chat turns.
+**Fix**: When sending a task, prepend the chat history.
+```typescript
+const taskWithContext = `
+HISTORY:
+User: Add keyboard
+Agent: Added.
+User: Checkout (Current Request)
+`;
+agent.execute(taskWithContext);
+```
 
-## Troubleshooting
+### 🎨 UI Implementation (Copilot Style)
+- **Hide Complexity**: Use `onThink` to capture "Plan" and "Questions", but hide the raw logs.
+- **Progress Bar**: Show a loading indicator while the agent works.
+- **Interactive Feedback**: If the agent outputs `ASK: ...`, display this as a message to the user.
 
-### Agent loops or repeats the same action
-*   **Cause**: The agent lost its history after a page reload, or the action failed silently.
-*   **Fix**: Ensure you are saving/restoring state correctly. The SDK has built-in loop detection that blocks identical consecutive actions (like clicking the same button twice).
+## 6. Troubleshooting
 
-### Agent can't find a button
-*   **Cause**: The element is not semantic (e.g., a `span` with a click listener).
-*   **Fix**: Update your HTML to include `role="button"` or use a `<button>` tag.
+### "Agent can't click the button"
+**Cause**: The element uses a `<div>` or `<span>` with a click handler but no semantic role. The `DOMAnalyzer` ignores non-interactive elements to reduce noise.
+**Fix**: Add `role="button"` and `tabindex="0"` to the element in your HTML/Vue/React code.
 
-### Agent stops early
-*   **Cause**: Step limit reached (default 15).
-*   **Fix**: The Agent will now warn the Planner when steps are running low (3 steps left) to force a conclusion. You can increase `maxSteps` in `agent.execute(task, maxSteps)`.
+### "Agent loops saying 'Task Completed'"
+**Cause**: You are calling `execute(..., true)` (resume) after the task was already finished. The agent sees "Completion" in history and stops immediately.
+**Fix**: Only use `resume=true` if the previous task was *interrupted* (e.g., by navigation). For a new user request, start fresh (`resume=false`).

@@ -929,6 +929,12 @@ var LangChainWebAgent = class {
     this.chatModel = model;
   }
   /**
+   * Update the agent's skills configuration
+   */
+  setSkills(skills) {
+    this.config.skills = skills;
+  }
+  /**
    * Get current page context
    */
   getContext() {
@@ -1021,7 +1027,7 @@ var LangChainWebAgent = class {
   /**
    * Execute a task automatically using Planner-Actor architecture
    */
-  async execute(task, maxSteps = 15, resume = false) {
+  async execute(task, maxSteps = 10, resume = false) {
     if (!resume) {
       this.results = [];
       this.history = [];
@@ -1030,9 +1036,16 @@ var LangChainWebAgent = class {
     for (let step = startStep; step < maxSteps; step++) {
       const pageContext = this.getPageDescription();
       this.log(`Planning step ${step + 1}`);
+      let urgencyInstruction = "";
+      if (maxSteps - step <= 3) {
+        urgencyInstruction = `
+
+CRITICAL WARNING: You have ${maxSteps - step} steps remaining. You MUST conclude the task immediately. If you cannot finish, output "DONE: <summary of what was achieved and what failed>". Do NOT start new exploration actions.`;
+      }
       try {
         const plannerSystemPrompt = `You are a Browser Agent Planner.
 Your goal is to complete the user's task on the current page.
+${urgencyInstruction}
 
 1. CRITICAL: CHECK FOR SUCCESS FIRST.
    - Look for "Thank you", "Order confirmed", "Success", or similar messages.
@@ -1047,9 +1060,15 @@ Your goal is to complete the user's task on the current page.
    - Group related actions together (e.g. "Fill all form fields", "Enter details and click submit").
    - Do not break down into single clicks unless necessary.
 
-5. AMBIGUITY CHECK: If the user request is unclear, ambiguous, or missing critical information, output: "ASK: <your question>"
+5. AMBIGUITY CHECK: If the user request is unclear, ambiguous, or missing critical information, output: "ASK: <your question>". IMPORTANT: Do not make up information.
 
 6. INTERACTIVE COMPLETION: If the task is DONE, instead of just "DONE", you can output "DONE: <summary>". You can also ask what the user wants to do next.
+
+7. ANY INFORMATION MISSING: If you lack critical information to proceed (e.g. user details, payment info), output: "ASK: <your question>". IMPORTANT: Do not make up information.
+
+8. ALWAYS keep the USER REQUEST in mind when planning your steps.
+
+9. IMPORTANT: NEVER perform actions that would SUBMIT or FINALIZE transactions without explicit instruction.
 
 Task: ${task}
 
@@ -1082,6 +1101,7 @@ What is the next step?`;
         }
         if (plan.toUpperCase().startsWith("DONE") || plan.includes("successfully booked")) {
           this.log("Task verified as complete");
+          this.history.push(`Completion: ${plan}`);
           if (plan.length > 4) {
             this.log(plan.substring(5).trim());
           }
@@ -1361,7 +1381,7 @@ async function createGeminiAgent(apiKey, modelName = "gemini-pro", options = {})
     const { ChatGoogleGenerativeAI } = await import('@langchain/google-genai');
     const model = new ChatGoogleGenerativeAI({
       apiKey,
-      modelName,
+      model: modelName,
       temperature: 0.3,
       maxOutputTokens: options.maxTokens
     });

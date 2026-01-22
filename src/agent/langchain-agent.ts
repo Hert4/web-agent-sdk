@@ -102,19 +102,19 @@ export interface LangChainConfig {
    * Pass in ChatOpenAI, ChatAnthropic, ChatGoogleGenerativeAI, etc.
    */
   model?: unknown; // BaseChatModel from @langchain/core
-  
+
   /**
    * Or use simple API config (will create ChatOpenAI internally)
    */
   apiEndpoint?: string;
   apiKey?: string;
   modelName?: string;
-  
+
   /**
    * Enable debug logging
    */
   debug?: boolean;
-  
+
   /**
    * Callback when action is executed
    */
@@ -124,17 +124,17 @@ export interface LangChainConfig {
    * Callback when action starts (useful for state saving before navigation)
    */
   onActionStart?: (action: WebAction) => void;
-  
+
   /**
    * Callback when thinking/reasoning
    */
   onThink?: (thought: string) => void;
-  
+
   /**
    * Callback for page context updates
    */
   onContext?: (context: PageContext) => void;
-  
+
   /**
    * Max retries for parsing
    */
@@ -213,7 +213,7 @@ export class LangChainWebAgent {
   private history: string[] = [];
   private results: ActionResult[] = [];
   private lastAction: WebAction | null = null;
-  
+
   constructor(config: LangChainConfig = {}) {
     this.config = {
       debug: false,
@@ -258,6 +258,13 @@ export class LangChainWebAgent {
   }
 
   /**
+   * Update the agent's skills configuration
+   */
+  setSkills(skills: string): void {
+    this.config.skills = skills;
+  }
+
+  /**
    * Get current page context
    */
   getContext(): PageContext {
@@ -279,13 +286,13 @@ export class LangChainWebAgent {
   async executeAction(action: WebAction): Promise<ActionResult> {
     // General Loop Detection
     if (this.lastAction && action.action !== 'scroll' && action.action !== 'wait') {
-       const cleanA = { ...action, reasoning: '' };
-       const cleanB = { ...this.lastAction, reasoning: '' };
-       if (JSON.stringify(cleanA) === JSON.stringify(cleanB)) {
-           const loopMsg = `Loop detected: You just performed this exact action (${action.action}). Try something else.`;
-           this.log(loopMsg);
-           return { success: false, action: action.action as any, message: loopMsg };
-       }
+      const cleanA = { ...action, reasoning: '' };
+      const cleanB = { ...this.lastAction, reasoning: '' };
+      if (JSON.stringify(cleanA) === JSON.stringify(cleanB)) {
+        const loopMsg = `Loop detected: You just performed this exact action (${action.action}). Try something else.`;
+        this.log(loopMsg);
+        return { success: false, action: action.action as any, message: loopMsg };
+      }
     }
     this.lastAction = action;
 
@@ -294,7 +301,7 @@ export class LangChainWebAgent {
     this.config.onActionStart?.(action);
 
     let result: ActionResult;
-    
+
     try {
       switch (action.action) {
         case 'click':
@@ -329,7 +336,7 @@ export class LangChainWebAgent {
 
     this.config.onAction?.(action, result);
     this.log(`Action: ${action.action} - ${result.message}`);
-    
+
     return result;
   }
 
@@ -338,19 +345,19 @@ export class LangChainWebAgent {
    */
   async executeActions(actions: WebAction[]): Promise<ActionResult[]> {
     const results: ActionResult[] = [];
-    
+
     for (const action of actions) {
       const result = await this.executeAction(action);
       results.push(result);
-      
+
       if (!result.success || action.action === 'done') {
         break;
       }
-      
+
       // Small delay between actions
       await new Promise(r => setTimeout(r, 300));
     }
-    
+
     return results;
   }
 
@@ -360,12 +367,12 @@ export class LangChainWebAgent {
    */
   async chat(message: string): Promise<{ response: string; actions?: WebAction[] }> {
     const pageContext = this.getPageDescription();
-    
+
     // If using LangChain model with structured output
     if (this.chatModel) {
       return this.chatWithLangChain(message, pageContext);
     }
-    
+
     // Fallback to simple API call
     return this.chatWithAPI(message, pageContext);
   }
@@ -378,15 +385,15 @@ export class LangChainWebAgent {
       this.results = [];
       this.history = [];
     }
-    
+
     // Continue from previous step count
     const startStep = this.results.length > 0 ? Math.floor(this.history.length / 2) : 0;
-    
+
     for (let step = startStep; step < maxSteps; step++) {
       const pageContext = this.getPageDescription();
-      
+
       this.log(`Planning step ${step + 1}`);
-      
+
       // Add urgency if running out of steps
       let urgencyInstruction = "";
       if (maxSteps - step <= 3) {
@@ -451,9 +458,9 @@ What is the next step?`;
             { role: 'user', content: plannerUserContent }
           ], false); // No JSON mode for Planner (text)
         }
-        
+
         this.log(`Plan: ${plan}`);
-        
+
         if (plan.startsWith('ASK:')) {
           this.log(`Agent Question: ${plan.substring(4).trim()}`);
           // Stop execution to let user respond
@@ -465,7 +472,7 @@ What is the next step?`;
           // Save completion to history so it persists across reloads/sessions
           this.history.push(`Completion: ${plan}`);
           if (plan.length > 4) {
-             this.log(plan.substring(5).trim());
+            this.log(plan.substring(5).trim());
           }
           break;
         }
@@ -473,14 +480,14 @@ What is the next step?`;
         // Execution Step
         // Pass original task context so Executor knows about constraints (e.g. "Do not submit")
         const { actions, response } = await this.chat(`Original Task Context: ${task}\n\nExecute this step: ${plan}`);
-        
+
         if (actions && actions.length > 0) {
           await this.executeActions(actions);
           // History is updated inside executeAction now
         } else {
           this.history.push(`Observation: ${response}`);
         }
-        
+
         // Wait for page updates
         await new Promise(r => setTimeout(r, 1000));
 
@@ -489,10 +496,10 @@ What is the next step?`;
         // If critical error in planning, maybe try simple execution for remaining steps if it was a model issue?
         // But if API is down, simple execution won't work either.
         // We will just break loop or return what we have.
-        break; 
+        break;
       }
     }
-    
+
     return this.results;
   }
 
@@ -502,12 +509,12 @@ What is the next step?`;
   private async executeSimple(task: string, maxSteps = 10): Promise<ActionResult[]> {
     const allResults: ActionResult[] = [];
     const history: string[] = [];
-    
+
     for (let step = 0; step < maxSteps; step++) {
       const pageContext = this.getPageDescription();
-      
+
       this.log(`Planning step ${step + 1}`);
-      
+
       try {
         // Planner Step
         // @ts-ignore - Dynamic type for LangChain model
@@ -532,11 +539,11 @@ ${history.join('\n')}
 
 What is the next step?`]
         ]);
-        
+
         // @ts-ignore
         const plan = planResponse.content.toString().trim();
         this.log(`Plan: ${plan}`);
-        
+
         if (plan.toUpperCase().startsWith('DONE') || plan.includes('successfully booked')) {
           this.log('Task verified as complete');
           break;
@@ -545,7 +552,7 @@ What is the next step?`]
         // Execution Step
         // Pass original task context so Executor knows about constraints (e.g. "Do not submit")
         const { actions, response } = await this.chat(`Original Task Context: ${task}\n\nExecute this step: ${plan}`);
-        
+
         if (actions && actions.length > 0) {
           const results = await this.executeActions(actions);
           allResults.push(...results);
@@ -553,7 +560,7 @@ What is the next step?`]
         } else {
           history.push(`Observation: ${response}`);
         }
-        
+
         // Wait for page updates
         await new Promise(r => setTimeout(r, 1000));
 
@@ -563,7 +570,7 @@ What is the next step?`]
         return this.executeSimple(task, maxSteps - step);
       }
     }
-    
+
     return allResults;
   }
 
@@ -578,7 +585,7 @@ What is the next step?`]
         withStructuredOutput?: (schema: unknown) => unknown;
         invoke?: (messages: unknown[]) => Promise<{ content: string }>;
       };
-      
+
       // Try structured output if available and enabled
       if (this.config.useStructuredOutput && model?.withStructuredOutput) {
         try {
@@ -587,7 +594,7 @@ What is the next step?`]
             ['system', `${STRUCTURED_SYSTEM_PROMPT}\n\n${this.config.skills ? `ADDITIONAL SKILLS:\n${this.config.skills}` : ''}`],
             ['human', `${pageContext}\n\nUser request: ${message}`],
           ]);
-          
+
           return {
             response: response.summary,
             actions: response.actions,
@@ -597,14 +604,14 @@ What is the next step?`]
           // Fall through to regular invoke
         }
       }
-      
+
       // Fallback to regular invoke and parse
       if (model?.invoke) {
         const response = await model.invoke([
           ['system', `${STRUCTURED_SYSTEM_PROMPT}\n\n${this.config.skills ? `ADDITIONAL SKILLS:\n${this.config.skills}` : ''}`],
           ['human', `${pageContext}\n\nUser request: ${message}`],
         ]);
-        
+
         const parsed = this.parseActionsFromResponse(response.content);
         return {
           response: parsed.summary || response.content,
@@ -614,7 +621,7 @@ What is the next step?`]
     } catch (error) {
       this.log(`LangChain error: ${error}`);
     }
-    
+
     return { response: 'LangChain model not properly configured' };
   }
 
@@ -658,7 +665,7 @@ What is the next step?`]
         { role: 'system', content: `${STRUCTURED_SYSTEM_PROMPT}\n\n${this.config.skills ? `ADDITIONAL SKILLS:\n${this.config.skills}` : ''}` },
         { role: 'user', content: `${pageContext}\n\nUser request: ${message}` },
       ], true); // Use JSON mode for Executor
-      
+
       const parsed = this.parseActionsFromResponse(content);
       return {
         response: parsed.summary || content,
@@ -679,9 +686,9 @@ What is the next step?`]
         // Try to find JSON in response
         const jsonMatch = response.match(/\{[\s\S]*\}/);
         if (!jsonMatch) continue;
-        
+
         const parsed = JSON.parse(jsonMatch[0]);
-        
+
         // Check if it's an actions list
         if (parsed.actions && Array.isArray(parsed.actions)) {
           const validated = WebActionsListSchema.safeParse(parsed);
@@ -689,21 +696,21 @@ What is the next step?`]
             return validated.data;
           }
         }
-        
+
         // Check if it's a single action
         const singleValidated = WebActionSchema.safeParse(parsed);
         if (singleValidated.success) {
-          return { 
+          return {
             summary: singleValidated.data.reasoning,
-            actions: [singleValidated.data] 
+            actions: [singleValidated.data]
           };
         }
-        
+
       } catch (e) {
         this.log(`Parse attempt ${retry + 1} failed`);
       }
     }
-    
+
     return {};
   }
 
@@ -712,7 +719,7 @@ What is the next step?`]
    */
   private mockResponse(message: string): { response: string; actions?: WebAction[] } {
     const lower = message.toLowerCase();
-    
+
     if (lower.includes('điền form') || lower.includes('fill form')) {
       return {
         response: 'Điền form với thông tin test',
@@ -725,14 +732,14 @@ What is the next step?`]
         ],
       };
     }
-    
+
     if (lower.includes('click') || lower.includes('submit') || lower.includes('gửi')) {
       return {
         response: 'Click vào nút',
         actions: [{ action: 'click', index: 5, reasoning: 'Click submit button' }],
       };
     }
-    
+
     return {
       response: 'Phân tích trang thành công',
       actions: [{ action: 'done', reasoning: 'Đã phân tích xong trang web' }],
@@ -754,15 +761,15 @@ What is the next step?`]
  * Requires @langchain/openai to be installed: npm i @langchain/openai
  */
 export async function createOpenAIAgent(
-  apiKey: string, 
+  apiKey: string,
   modelName = 'gpt-4',
   options: Partial<LangChainConfig> = {}
 ): Promise<LangChainWebAgent> {
   try {
     // @ts-ignore - Optional dependency, users need to install @langchain/openai
     const { ChatOpenAI } = await import('@langchain/openai');
-    const model = new ChatOpenAI({ 
-      apiKey, 
+    const model = new ChatOpenAI({
+      apiKey,
       modelName,
       temperature: 0.3,
       maxTokens: options.maxTokens,
@@ -785,15 +792,15 @@ export async function createOpenAIAgent(
  * Requires @langchain/anthropic to be installed: npm i @langchain/anthropic
  */
 export async function createAnthropicAgent(
-  apiKey: string, 
+  apiKey: string,
   modelName = 'claude-3-sonnet-20240229',
   options: Partial<LangChainConfig> = {}
 ): Promise<LangChainWebAgent> {
   try {
     // @ts-ignore - Optional dependency, users need to install @langchain/anthropic
     const { ChatAnthropic } = await import('@langchain/anthropic');
-    const model = new ChatAnthropic({ 
-      apiKey, 
+    const model = new ChatAnthropic({
+      apiKey,
       modelName,
       temperature: 0.3,
       maxTokens: options.maxTokens,
@@ -810,16 +817,16 @@ export async function createAnthropicAgent(
  * Requires @langchain/google-genai to be installed: npm i @langchain/google-genai
  */
 export async function createGeminiAgent(
-  apiKey: string, 
-  modelName = 'gemini-pro', 
+  apiKey: string,
+  modelName = 'gemini-pro',
   options: Partial<LangChainConfig> = {}
 ): Promise<LangChainWebAgent> {
   try {
     // @ts-ignore - Optional dependency, users need to install @langchain/google-genai
     const { ChatGoogleGenerativeAI } = await import('@langchain/google-genai');
-    const model = new ChatGoogleGenerativeAI({ 
-      apiKey, 
-      modelName,
+    const model = new ChatGoogleGenerativeAI({
+      apiKey,
+      model: modelName,
       temperature: 0.3,
       maxOutputTokens: options.maxTokens,
     });
