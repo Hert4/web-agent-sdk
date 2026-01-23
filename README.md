@@ -18,3 +18,7 @@ npm install web-agent-sdk
 # Install peer dependencies as needed
 npm install @langchain/core @langchain/openai @langchain/google-genai
 ```
+
+## Documentation & Source
+
+GITHUB: https://github.com/Hert4/web-agent-sdk
